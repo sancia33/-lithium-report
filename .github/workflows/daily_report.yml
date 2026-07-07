@@ -2,9 +2,11 @@ name: 碳酸锂日报
 
 on:
   schedule:
-    # 每天早上 9:00 UTC = 北京时间 17:00
     - cron: '0 1 * * *'
-  workflow_dispatch:  # 支持手动触发
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   report:

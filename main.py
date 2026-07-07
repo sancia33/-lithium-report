@@ -23,7 +23,11 @@ def run():
         p = info.get("price", info.get("raw", "N/A"))
         if isinstance(p, list):
             p = "; ".join(p)
-        print(f"  {source}: {p}")
+        detail = info.get("detail", info.get("error", ""))
+        if detail:
+            print(f"  {source}: {p} ({detail})")
+        else:
+            print(f"  {source}: {p}")
 
     # 2. 获取新闻
     print("\n[2/3] 正在检索行业信息...")

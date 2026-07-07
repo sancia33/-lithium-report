@@ -11,105 +11,167 @@ HEADERS = {
 }
 
 
-def fetch_sina_futures():
-    """从新浪财经获取碳酸锂期货主力合约价格（最稳定的源）"""
+def fetch_eastmoney_quote():
+    """从东方财富API获取碳酸锂期货行情（最可靠的源）"""
     try:
-        url = "https://hq.sinajs.cn/list=gfex_lc0"
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-        resp.encoding = "gbk"
-        text = resp.text
+        # 先搜索找到碳酸锂的secid
+        search_url = "https://searchadapter.eastmoney.com/api/suggestion/get"
+        params = {
+            "input": "碳酸锂",
+            "type": 14,
+            "token": "D43BF722C8E33BDC906FB84D85E326E8",
+        }
+        resp = requests.get(search_url, params=params, headers=HEADERS, timeout=10)
+        data = resp.json()
+        secids = []
+        for item in data.get("Data", []):
+            code = item.get("code", item.get("Code", ""))
+            if "LC" in code.upper() or "碳酸锂" in item.get("name", item.get("Name", "")):
+                secid = item.get("secid", item.get("SecID", ""))
+                if secid:
+                    secids.append(secid)
 
-        # 返回格式: var hq_str_gfex_lc0="名称,开盘,最高,最低,最新,涨跌,..."
-        match = re.search(r'"(.*?)"', text)
-        if match:
-            fields = match.group(1).split(",")
-            if len(fields) >= 10:
-                name = fields[0]
-                price = fields[3]  # 最新价
-                change = fields[4]  # 涨跌
-                change_pct = fields[5]  # 涨跌幅
-                open_price = fields[1]
-                high = fields[2]
-                low = fields[3]
+        # 如果没有搜索到，用已知的secid尝试
+        known_ids = [
+            "102.10280729",  # 碳酸锂主力 GFEX
+            "0.10280729",
+            "1.10280729",
+        ]
+        secids.extend(id for id in known_ids if id not in secids)
+
+        # 用secid获取行情
+        for secid in secids:
+            try:
+                quote_url = "https://push2.eastmoney.com/api/qt/stock.np/get"
+                qparams = {
+                    "secid": secid,
+                    "fields": "f2,f3,f4,f12,f14,f15,f16,f17,f18,f19",
+                }
+                qresp = requests.get(quote_url, params=qparams, headers=HEADERS, timeout=10)
+                qdata = qresp.json()
+                qd = qdata.get("data", {})
+                if qd and qd.get("f2"):
+                    price = qd["f2"]
+                    high = qd.get("f15", "")
+                    low = qd.get("f16", "")
+                    open_p = qd.get("f17", "")
+                    pre_close = qd.get("f18", "")
+                    change = qd.get("f4", "")
+                    change_pct = qd.get("f3", "")
+                    name = qd.get("f14", "碳酸锂")
+                    return {
+                        f"东方财富({name})": {
+                            "price": price,
+                            "change": change,
+                            "change_pct": f"{change_pct}%" if change_pct else "",
+                            "open": open_p,
+                            "high": high,
+                            "low": low,
+                            "pre_close": pre_close,
+                            "unit": "元/吨",
+                            "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        }
+                    }
+            except Exception:
+                continue
+
+        return {}
+    except Exception as e:
+        return {"东方财富": {"error": str(e)}}
+
+
+def fetch_eastmoney_spot():
+    """从东方财富获取碳酸锂现货价格"""
+    try:
+        url = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+        params = {
+            "fltt": "2",
+            "fields": "f2,f3,f4,f12,f14",
+            "secids": "102.10280729,102.LC0",
+            "_": int(datetime.now().timestamp() * 1000),
+        }
+        resp = requests.get(url, params=params, headers=HEADERS, timeout=10)
+        data = resp.json()
+        items = data.get("data", {}).get("diff", []) if data.get("data") else []
+        for item in items if isinstance(items, list) else []:
+            price = item.get("f2")
+            if price:
+                name = item.get("f14", "碳酸锂期货")
                 return {
-                    "广期所(碳酸锂期货主力)": {
+                    f"东方财富({name})": {
                         "price": price,
-                        "change": change,
-                        "change_pct": change_pct,
                         "unit": "元/吨",
-                        "raw": f"开盘{open_price} 最高{high} 最低{low}",
                         "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     }
                 }
         return {}
     except Exception as e:
-        return {"新浪财经(期货)": {"error": str(e)}}
+        return {"东方财富现货": {"error": str(e)}}
 
 
-def fetch_sina_spot():
-    """从新浪财经获取碳酸锂现货价格"""
+def fetch_sina_futures():
+    """从新浪财经获取碳酸锂期货价格"""
     try:
-        symbol_candidates = ["gfex_lc0", "gfex_lc2409", "gfex_lc2501"]
-        for sym in symbol_candidates:
+        headers = {**HEADERS, "Referer": "https://finance.sina.com.cn"}
+
+        # 尝试不同的合约代码
+        symbols = [
+            "gfex_lc0", "gfex_lc2412", "gfex_lc2501",
+            "GFEX_LC0", "gfex_LC0",
+            "gzex_lc0", "gzex_lc2412",
+        ]
+
+        for sym in symbols:
             try:
                 url = f"https://hq.sinajs.cn/list={sym}"
-                resp = requests.get(url, headers=HEADERS, timeout=10)
+                resp = requests.get(url, headers=headers, timeout=10)
                 resp.encoding = "gbk"
-                text = resp.text
+                text = resp.text.strip()
+
+                if "not exist" in text.lower() or "404" in text:
+                    continue
+
                 match = re.search(r'"(.*?)"', text)
                 if match:
                     fields = match.group(1).split(",")
-                    if len(fields) >= 8 and fields[0]:
-                        price = fields[3] if fields[3] else fields[1]
+                    if len(fields) >= 8 and fields[0] and fields[3]:
+                        price = fields[3]
                         if price and price != "0.00":
+                            change = fields[4] if len(fields) > 4 else ""
+                            change_pct = fields[5] if len(fields) > 5 else ""
                             return {
-                                "新浪财经(碳酸锂)": {
+                                "新浪财经(期货)": {
                                     "price": price,
+                                    "change": change,
+                                    "change_pct": change_pct,
                                     "unit": "元/吨",
-                                    "raw": f"合约:{fields[0]}",
+                                    "raw": f"合约:{fields[0]} 开盘:{fields[1]} 最高:{fields[2]} 最低:{fields[3]}",
                                     "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
                                 }
                             }
             except Exception:
                 continue
+
         return {}
     except Exception as e:
         return {"新浪财经": {"error": str(e)}}
 
 
-def fetch_100ppi_with_session():
-    """从生意社监测页获取价格（带session/cookies）"""
+def fetch_100ppi():
+    """从生意社获取碳酸锂价格"""
     try:
         sess = requests.Session()
         sess.headers.update(HEADERS)
-        # 先访问首页获取cookie
         sess.get("https://www.100ppi.com", timeout=10)
+
         resp = sess.get("https://www.100ppi.com/monitor/", timeout=15)
         resp.encoding = "utf-8"
 
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(resp.text, "html.parser")
+        text = soup.get_text()
 
-        # 找所有包含"碳酸锂"的文本行
-        for elem in soup.find_all(["td", "th", "span", "div", "li", "a"]):
-            text = elem.get_text(strip=True)
-            if "碳酸锂" in text:
-                parent = elem.parent
-                parent_text = parent.get_text(strip=True) if parent else text
-                nums = re.findall(r"[\d,]+\.?\d*", parent_text)
-                if nums:
-                    return {
-                        "生意社": {
-                            "price": nums[0],
-                            "unit": "元/吨",
-                            "raw": parent_text[:150],
-                            "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        }
-                    }
-
-        # fallback: 全页搜索
-        page_text = soup.get_text()
-        for line in page_text.split("\n"):
+        for line in text.split("\n"):
             if "碳酸锂" in line:
                 nums = re.findall(r"[\d,]+\.?\d*", line)
                 if nums:
@@ -126,44 +188,13 @@ def fetch_100ppi_with_session():
         return {"生意社": {"error": str(e)}}
 
 
-def fetch_google_search():
-    """通过Google搜索获取碳酸锂价格"""
-    try:
-        url = "https://www.google.com/search"
-        params = {"q": "碳酸锂价格 2026", "hl": "zh-CN"}
-        resp = requests.get(url, params=params, headers=HEADERS, timeout=15)
-
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(resp.text, "html.parser")
-        snippets = []
-        for div in soup.select("div[class*='BNeawe']"):
-            text = div.get_text(strip=True)
-            if "碳酸锂" in text and re.search(r"[\d,]+\.?\d*", text):
-                snippets.append(text)
-
-        for s in snippets[:3]:
-            nums = re.findall(r"[\d,]+\.?\d*", s)
-            if nums:
-                return {
-                    "Google搜索": {
-                        "price": nums[0],
-                        "unit": "元/吨",
-                        "raw": s[:120],
-                        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    }
-                }
-        return {}
-    except Exception as e:
-        return {"Google": {"error": str(e)}}
-
-
 def get_all_prices():
     """聚合所有价格数据"""
     fetchers = [
-        ("新浪期货", fetch_sina_futures),
-        ("新浪现货", fetch_sina_spot),
-        ("生意社", fetch_100ppi_with_session),
-        ("Google", fetch_google_search),
+        ("东方财富期货", fetch_eastmoney_quote),
+        ("东方财富现货", fetch_eastmoney_spot),
+        ("新浪财经", fetch_sina_futures),
+        ("生意社", fetch_100ppi),
     ]
 
     result = {}
@@ -171,17 +202,22 @@ def get_all_prices():
     for name, fetcher in fetchers:
         try:
             data = fetcher()
-            if data and any(
-                v.get("price") or v.get("error") for v in data.values()
-            ):
-                result.update(data)
+            if data:
+                # 跳过只有error的返回
+                has_real_data = any(
+                    v.get("price") and v["price"] not in ("", "0", "0.00", "N/A")
+                    for v in data.values()
+                )
+                if has_real_data:
+                    result.update(data)
+                    break
         except Exception as e:
             errors.append(f"{name}: {e}")
 
     if not result:
         result["提示"] = {
-            "price": "暂未获取到价格数据",
-            "detail": "; ".join(errors) if errors else "所有数据源均无返回",
+            "price": "今日暂未获取到价格数据",
+            "detail": "; ".join(errors) if errors else "所有数据源均无返回，可能非交易日",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
 
